@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# 训练日志
+logs/
+
+# 模型文件（太大）
+*.pth
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

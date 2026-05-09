@@ -1,0 +1,64 @@
+================================================================================
+CIFAR-10 VGG 风格网络简要说明（标准拓扑 / Crossbar+ReLU / Crossbar+器件激活）
+================================================================================
+对应代码：unified_models.py 中 CIFAR10VGGStyleCNN、UnifiedVGGWithDeviceNeuron（及
+CIFAR10UnifiedVGGWithDeviceNeuron）；训练入口 train_cifar10_corssbar.py。
+
+--------------------------------------------------------------------------------
+一、标准 VGG 风格（拓扑与常用激活，与是否用阵列仿真无关）
+--------------------------------------------------------------------------------
+输入：32×32×3（CIFAR-10）。
+
+卷积块（均为 3×3、padding=1）：
+  Block1：3→64→64，MaxPool(2)  → 特征图 16×16
+  Block2：64→128→128，MaxPool(2) → 8×8
+  Block3：128→256→256，MaxPool(2) → 4×4
+
+全连接：
+  展平 256×4×4 = 4096 → 512 → 10（类别 logits）
+
+常用设置：各卷积/隐藏全连接后接 ReLU；可选 BatchNorm；FC 分支上 512 维后常加
+Dropout(0.5)；最后一层 10 维输出不加 ReLU（损失函数用 CrossEntropyLoss 内含 softmax）。
+
+--------------------------------------------------------------------------------
+二、本仓库「Crossbar + ReLU」版（CIFAR10VGGStyleCNN，--model vgg）
+--------------------------------------------------------------------------------
+网络深度与通道与上一节相同。
+
+权重计算：卷积与全连接由 UnifiedCrossbarConv2d、UnifiedCrossbarLinear 实现，即
+权重量化并经 Crossbar（DAC → 阵列 MVM → ADC）与映射误差建模，见 crossbar_core.py。
+
+激活函数：非线性仍为 PyTorch 的 nn.ReLU，顺序为
+  Conv/Linear（阵列线性） → BatchNorm → ReLU → Pool 或 Dropout
+（见 CIFAR10VGGStyleCNN.forward：relu(bn(conv(x)))）
+
+--------------------------------------------------------------------------------
+三、「Crossbar + 器件激活」版（CIFAR10UnifiedVGGWithDeviceNeuron，--model vgg_device_neuron）
+--------------------------------------------------------------------------------
+拓扑与通道与上两节相同（仍为 64-64 / 128-128 / 256-256 / 512 / 10）。
+
+权重计算：卷积与隐藏全连接使用 UnifiedCrossbarConv2d、UnifiedCrossbarLinear（与
+ReLU 版相同的 Crossbar 线性层）；非线性由 DeviceNeuronAfterBN 提供——在 BatchNorm
+之后用 tanh 映射到 (-1,1)，再经 CustomDeviceNeuron（配置见 get_device_activation() /
+my_device_activation.py）与可学习 output_scale（避免在 BN 后再做 batch max 归一化）。
+
+前向顺序（与 ReLU 版对齐）：Crossbar 线性 → BatchNorm → DeviceNeuronAfterBN → Pool
+或 Dropout；与第二节仅差「ReLU」与「器件激活」。
+
+最后一层分类：UnifiedCrossbarLinear(512→10)，无额外激活，仅输出 logits。
+
+--------------------------------------------------------------------------------
+四、Integrated 层 UnifiedCrossbar*WithActivation（其它模型若使用）
+--------------------------------------------------------------------------------
+数据流为：MVM 差分电流 → 对称归一化 → 器件激活（模拟域）→ 缩放 → **ADC 读出** → +bias。
+器件非线性 **不** 放在「先 ADC 再激活」；读出 ADC 在激活之后。
+
+五、与「无激活」Crossbar 层的对比
+--------------------------------------------------------------------------------
+UnifiedCrossbarConv2d / Linear：MVM → ADC（线性读出）。带器件的 Integrated 层：MVM →
+器件非线性 → ADC。二者 **读出顺序不同** 是建模差异，不是实现错误；跨模型比精度时
+应理解这一点。
+
+================================================================================
+（完）
+================================================================================
